@@ -1,0 +1,287 @@
+// MIT License
+//
+// Copyright (c) 2016 Wouter B. de Vries
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+use std::str::FromStr;
+use std::thread::sleep;
+use std::time::Duration;
+use std::io::{Cursor, Error};
+use std::net::{IpAddr, Ipv6Addr};
+
+use anyhow::{anyhow, Result};
+use byteorder::{LittleEndian, ReadBytesExt};
+use libc::{AF_INET, AF_INET6, bind, c_int, c_void, in_addr, sendto, SOCK_RAW, sockaddr,
+           sockaddr_in, sockaddr_in6, socket};
+
+// Static values
+static IPPROTO_ICMP: c_int = 1;
+static IPPROTO_ICMPV6: c_int = 58;
+
+enum SockAddr {
+    V4(sockaddr_in),
+    V6(sockaddr_in6),
+}
+
+#[derive(Debug)]
+pub struct ICMP6Header {
+    pub icmp_type: u8,
+    pub code: u8,
+    pub checksum: u16,
+    pub header: u32,
+}
+
+impl ICMP6Header {
+    pub fn echo_request(identifier: u16, sequence_number: u16) -> ICMP6Header {
+        let header = ((identifier as u32) << 16) | (sequence_number as u32);
+        let mut icmp6_header = ICMP6Header {
+            icmp_type: 128,
+            code: 0,
+            checksum: 0,
+            header: header,
+        };
+        let checksum = ICMP6Header::calc_checksum(&icmp6_header.to_byte_array());
+        icmp6_header.checksum = checksum;
+        icmp6_header
+    }
+
+    pub fn to_byte_array(&self) -> [u8; 8] {
+        let mut buffer = [0; 8];
+        buffer[0] = self.icmp_type;
+        buffer[1] = self.code;
+        buffer[2] = (self.checksum >> 8 & 0xFF) as u8;
+        buffer[3] = (self.checksum & 0xFF) as u8;
+        buffer[4] = (self.header >> 24 & 0xFF) as u8;
+        buffer[5] = (self.header >> 16 & 0xFF) as u8;
+        buffer[6] = (self.header >> 8 & 0xFF) as u8;
+        buffer[7] = (self.header & 0xFF) as u8;
+        buffer
+    }
+
+    fn calc_checksum(buffer: &[u8]) -> u16 {
+        let mut size = buffer.len();
+        let mut checksum: u32 = 0;
+        while size > 0 {
+            let word = (buffer[buffer.len() - size] as u16) << 8 |
+            (buffer[buffer.len() - size + 1]) as u16;
+            checksum += word as u32;
+            size -= 2;
+        }
+        let remainder = checksum >> 16;
+        checksum &= 0xFFFF;
+        checksum += remainder;
+        checksum ^= 0xFFFF;
+        checksum as u16
+    }
+}
+
+#[derive(Debug)]
+pub struct ICMP4Header {
+    pub icmp_type: u8,
+    pub code: u8,
+    pub checksum: u16,
+    pub header: u32,
+}
+
+impl ICMP4Header {
+    pub fn echo_request(identifier: u16, sequence_number: u16) -> ICMP4Header {
+        let header = ((identifier as u32) << 16) | (sequence_number as u32);
+        let mut icmp4_header = ICMP4Header {
+            icmp_type: 8,
+            code: 0,
+            checksum: 0,
+            header: header,
+        };
+        let checksum = ICMP4Header::calc_checksum(&icmp4_header.to_byte_array());
+        icmp4_header.checksum = checksum;
+        icmp4_header
+    }
+
+    pub fn to_byte_array(&self) -> [u8; 8] {
+        let mut buffer = [0; 8];
+        buffer[0] = self.icmp_type;
+        buffer[1] = self.code;
+        buffer[2] = (self.checksum >> 8 & 0xFF) as u8;
+        buffer[3] = (self.checksum & 0xFF) as u8;
+        buffer[4] = (self.header >> 24 & 0xFF) as u8;
+        buffer[5] = (self.header >> 16 & 0xFF) as u8;
+        buffer[6] = (self.header >> 8 & 0xFF) as u8;
+        buffer[7] = (self.header & 0xFF) as u8;
+        buffer
+    }
+
+    fn calc_checksum(buffer: &[u8]) -> u16 {
+        let mut size = buffer.len();
+        let mut checksum: u32 = 0;
+        while size > 0 {
+            let word = (buffer[buffer.len() - size] as u16) << 8 |
+            (buffer[buffer.len() - size + 1]) as u16;
+            checksum += word as u32;
+            size -= 2;
+        }
+        let remainder = checksum >> 16;
+        checksum &= 0xFFFF;
+        checksum += remainder;
+        checksum ^= 0xFFFF;
+        checksum as u16
+    }
+}
+
+pub fn new_icmpv4_socket() -> Result<i32> {
+    let handle = unsafe { socket(AF_INET, SOCK_RAW, IPPROTO_ICMP) };
+    if handle == -1 {
+        return Err(anyhow!(Error::last_os_error().to_string()));
+    }
+    Ok(handle)
+}
+
+pub fn new_icmpv6_socket() -> Result<i32> {
+    let handle = unsafe { socket(AF_INET6, SOCK_RAW, IPPROTO_ICMPV6) };
+    if handle == -1 {
+        return Err(anyhow!(Error::last_os_error().to_string()));
+    }
+    Ok(handle)
+}
+
+pub fn bind_to_ip(handle: i32, ip: &str) -> Result<()> {
+    let addr = string_to_sockaddr(ip);
+    if let Some(addr) = addr {
+        // Cast address from sockaddr_in/sockaddr_in6 to sockaddr
+        let cast_addr = match &addr {
+            SockAddr::V4(input) => (input as *const sockaddr_in) as *const sockaddr,
+            SockAddr::V6(input) => (input as *const sockaddr_in6) as *const sockaddr
+        };
+        let retval = unsafe { bind(handle, cast_addr, 16) };
+        if retval != 0 {
+            return Err(anyhow!(Error::last_os_error()));
+        }
+        return Ok(());
+    }
+    Err(anyhow!("Invalid IP-address"))
+}
+
+
+fn string_to_sockaddr(ip: &str) -> Option<SockAddr> {
+    let dest_ip = IpAddr::from_str(ip);
+    if let Ok(IpAddr::V4(dest_ip)) = dest_ip {
+        let mut ipcursor = Cursor::new(dest_ip.octets());
+        let addr = sockaddr_in {
+            sin_family: AF_INET as u16,
+            sin_port: 0,
+            sin_addr: in_addr { s_addr: ipcursor.read_u32::<LittleEndian>().unwrap() },
+            sin_zero: [0; 8],
+        };
+        return Some(SockAddr::V4(addr));
+    } else if let Ok(IpAddr::V6(dest_ip)) = dest_ip {
+        let addr = sockaddr_in6 {
+            sin6_flowinfo: 0,
+            sin6_port: 0,
+            sin6_scope_id: 0,
+            sin6_family: AF_INET6 as u16,
+            sin6_addr: init_in6_addr(dest_ip),
+        };
+        return Some(SockAddr::V6(addr));
+    }
+    None
+}
+
+fn init_in6_addr(addr: Ipv6Addr) -> libc::in6_addr {
+    libc::in6_addr {
+        s6_addr: addr.octets()
+    }
+}
+
+// https://linux.die.net/man/2/sendto
+pub fn send_packet(handlev4: i32,
+                   handlev6: i32,
+                   destination: &str,
+                   bufferv4: &[u8],
+                   bufferv6: &[u8])
+                   -> Result<u32> {
+    let addr = string_to_sockaddr(destination);
+    if let Some(addr) = addr {
+        let mut pktlength = -1;
+        while pktlength == -1 {
+            if let SockAddr::V4(addr) = addr {
+                pktlength = unsafe {
+
+                    // sendto(int sockfd, const void *buf, size_t len, int flags, const struct sockaddr *dest_addr, socklen_t addrlen);
+
+                    sendto(handlev4,
+                           bufferv4.as_ptr() as *mut c_void,
+                           bufferv4.len(),
+                           0,
+                           (&addr as *const sockaddr_in) as *const sockaddr,
+                           16)
+                };
+            } else if let SockAddr::V6(addr) = addr {
+                pktlength = unsafe {
+                    sendto(handlev6,
+                           bufferv6.as_ptr() as *mut c_void,
+                           bufferv6.len(),
+                           0,
+                           (&addr as *const sockaddr_in6) as *const sockaddr,
+                           28)
+                };
+            }
+            // sleep(Duration::from_secs(1));
+            if pktlength == -1 {
+                let syserr = Error::last_os_error();
+                if syserr.raw_os_error().is_some() && syserr.raw_os_error().unwrap() == 105 {
+                    sleep(Duration::from_millis(1));
+                } else {
+                    println!("Error: {}", syserr);
+                    return Err(anyhow!(syserr));
+                }
+            }
+        }
+        return Ok(pktlength as u32);
+    }
+    Err(anyhow!(format!("Invalid IP-Address: {}", destination).to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ICMP4Header;
+
+    #[test]
+    fn checksum() {
+        // Example from some other source
+        let test1 = vec![0b00001000u8,
+                         0b00000000u8,
+                         0b00000000u8,
+                         0b00000000u8,
+                         0b00000000u8,
+                         0b00000001u8,
+                         0b00000000u8,
+                         0b00001001u8,
+                         0b01010100u8,
+                         0b01000101u8,
+                         0b01010011u8,
+                         0b01010100u8];
+        let mut checksum = ICMP4Header::calc_checksum(&test1);
+        assert_eq!(checksum, 20572);
+
+        // Example from wikipedia IPV4
+        let test2 = vec![0x45u8, 0x00, 0x00, 0x73, 0x40, 0x00, 0x40, 0x11, 0x00, 0x00, 0xc0, 0xa8,
+                         0x00, 0x01, 0xc0, 0xa8, 0x00, 0xc7];
+        checksum = ICMP4Header::calc_checksum(&test2);
+        assert_eq!(checksum, 0xb861);
+    }
+}

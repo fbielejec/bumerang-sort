@@ -1,0 +1,33 @@
+#+TITLE:       bumerang-sort
+#+SUBTITLE:    sorting-1-million-8-decimal-digit-numbers-with-1-mb-of-ram
+
+* Summary
+
+Problem description is here https://web.archive.org/web/20160309195130/http://nick.cleaton.net/ramsort.html and here: https://stackoverflow.com/questions/12748246/sorting-1-million-8-decimal-digit-numbers-with-1-mb-of-ram.
+Inspired by the solution in the first SO answer, using network for storage :)
+
+* Development
+
+listen to ICMP packets on loopback address:
+#+BEGIN_SRC bash
+sudo tcpdump -i lo icmp and icmp[icmptype]=icmp-echo
+#+END_SRC
+
+Listen on the "destination" port: 
+
+#+BEGIN_SRC bash
+socat TCP-LISTEN:3003,fork stdout
+#+END_SRC
+
+Watch & compile:
+
+#+BEGIN_SRC bash
+sudo su --shell /bin/bash
+cargo watch -x run
+#+END_SRC
+
+Send some data to the TCP listener:
+
+#+BEGIN_SRC bash
+curl telnet://127.0.0.1:3002 <<< 7
+#+END_SRC

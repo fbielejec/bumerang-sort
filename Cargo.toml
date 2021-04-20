@@ -1,0 +1,12 @@
+[package]
+name = "bumerang-sort"
+version = "0.1.0"
+authors = ["filip <fbielejec@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+libc = "0.2.84"
+time = "0.2.26"
+byteorder = "1.4.2"
+anyhow = "1.0"
+pnet = "0.27.2"
