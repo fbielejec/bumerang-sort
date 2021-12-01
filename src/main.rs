@@ -16,7 +16,7 @@ use pnet::packet::udp::UdpPacket;
 use pnet::packet::{ Packet, MutablePacket};
 use pnet::transport::TransportChannelType::Layer4;
 use pnet::transport::TransportProtocol::Ipv4;
-use pnet::transport::{transport_channel, udp_packet_iter};
+use pnet::transport::{transport_channel, udp_packet_iter, tcp_packet_iter};
 use pnet::util::MacAddr;
 use std::env;
 use std::f32;
@@ -37,6 +37,17 @@ fn to_float (data: &[u8;50], size: usize) -> f32 {
 
     // 1f32
     s.parse::<f32>().unwrap()
+}
+
+fn to_int (data: &[u8;50], size: usize) -> i32 {
+
+    let s = from_utf8(&data[0..size]).unwrap();
+    let mut s = s.to_string ();
+    let len = s.len();
+    s.truncate(len - 1);
+
+    // 1f32
+    s.parse::<i32>().unwrap()
 }
 
 // fn send_icmp () {
@@ -67,45 +78,24 @@ fn to_float (data: &[u8;50], size: usize) -> f32 {
 
 // }
 
-// fn handle_incoming(mut stream: TcpStream) {
-
-//     println!("@handle incoming");
-
-//     let mut data = [0 as u8; 50];
-//     while match stream.read(&mut data) {
-//         Ok(size) => {
-//             println!("Received {} bytes", size);
-
-//             let v = to_float (&data, size);
-
-//             println!("value: {:#?}",  v);
-
-//             // TODO : send ICMP echo request
-//             // send_icmp ();
-
-//             true
-//         },
-//         Err(_) => {
-//             println!("An error occurred, terminating connection with {}", stream.peer_addr().unwrap());
-//             stream.shutdown(Shutdown::Both).unwrap();
-//             false
-//         }
-//     } {}
-
-// }
-
 fn handle_tcp_packet(interface_name: &str, source: IpAddr, destination: IpAddr, packet: &[u8]) {
     let tcp = TcpPacket::new(packet);
     if let Some(tcp) = tcp {
-        println!(
-            "[{}]: TCP Packet: {}:{} > {}:{}; length: {}",
-            interface_name,
-            source,
-            tcp.get_source(),
-            destination,
-            tcp.get_destination(),
-            packet.len()
-        );
+
+        // TODO : that's us!
+        if (tcp.get_destination() == 3002) {
+
+            println!(
+                "[{}]: TCP Packet: {}:{} > {}:{}; length: {}",
+                interface_name,
+                source,
+                tcp.get_source(),
+                destination,
+                tcp.get_destination(),
+                packet.len()
+            );
+        }
+
     } else {
         println!("[{}]: Malformed TCP Packet", interface_name);
     }
@@ -170,18 +160,19 @@ fn handle_transport_protocol(
         // IpNextHeaderProtocols::Icmpv6 => {
         //     handle_icmpv6_packet(interface_name, source, destination, packet)
         // }
-        _ => println!(
-            "[{}]: Unknown {} packet: {} > {}; protocol: {:?} length: {}",
-            interface_name,
-            match source {
-                IpAddr::V4(..) => "IPv4",
-                _ => "IPv6",
-            },
-            source,
-            destination,
-            protocol,
-            packet.len()
-        ),
+        _ => ()
+        //     println!(
+        //     "[{}]: Unknown {} packet: {} > {}; protocol: {:?} length: {}",
+        //     interface_name,
+        //     match source {
+        //         IpAddr::V4(..) => "IPv4",
+        //         _ => "IPv6",
+        //     },
+        //     source,
+        //     destination,
+        //     protocol,
+        //     packet.len()
+        // ),
     }
 }
 
@@ -224,86 +215,126 @@ fn handle_ethernet_frame(interface: &NetworkInterface, ethernet: &EthernetPacket
     }
 }
 
+// fn main() -> std::io::Result<()> {
+
+//     let iface_name = "lo";
+//     let interface_names_match = |iface: &NetworkInterface| iface.name == iface_name;
+
+//     // Find the network interface with the provided name
+//     let interfaces = datalink::interfaces();
+//     let interface = interfaces
+//         .into_iter()
+//         .filter(interface_names_match)
+//         .next()
+//         .unwrap_or_else(|| panic!("No such network interface: {}", iface_name));
+
+//     let (_, mut rx) = match datalink::channel(&interface, Default::default()) {
+//         Ok(Ethernet(tx, rx)) => (tx, rx),
+//         Ok(_) => panic!("packetdump: unhandled channel type: {}"),
+//         Err(e) => panic!("packetdump: unable to create channel: {}", e),
+//     };
+
+//     loop {
+//         let mut buf: [u8; 1600] = [0u8; 1600];
+//         let mut fake_ethernet_frame = MutableEthernetPacket::new(&mut buf[..]).unwrap();
+//         match rx.next() {
+//             Ok(packet) => {
+//                 let payload_offset;
+//                 if cfg!(any(target_os = "macos", target_os = "ios"))
+//                     && interface.is_up()
+//                     && !interface.is_broadcast()
+//                     && ((!interface.is_loopback() && interface.is_point_to_point())
+//                         || interface.is_loopback())
+//                 {
+//                     if interface.is_loopback() {
+//                         // The pnet code for BPF loopback adds a zero'd out Ethernet header
+//                         payload_offset = 14;
+//                     } else {
+//                         // Maybe is TUN interface
+//                         payload_offset = 0;
+//                     }
+//                     if packet.len() > payload_offset {
+//                         let version = Ipv4Packet::new(&packet[payload_offset..])
+//                             .unwrap()
+//                             .get_version();
+//                         if version == 4 {
+//                             fake_ethernet_frame.set_destination(MacAddr(0, 0, 0, 0, 0, 0));
+//                             fake_ethernet_frame.set_source(MacAddr(0, 0, 0, 0, 0, 0));
+//                             fake_ethernet_frame.set_ethertype(EtherTypes::Ipv4);
+//                             fake_ethernet_frame.set_payload(&packet[payload_offset..]);
+
+//                             handle_ethernet_frame(&interface, &fake_ethernet_frame.to_immutable());
+//                             continue;
+//                         } else if version == 6 {
+//                             fake_ethernet_frame.set_destination(MacAddr(0, 0, 0, 0, 0, 0));
+//                             fake_ethernet_frame.set_source(MacAddr(0, 0, 0, 0, 0, 0));
+//                             fake_ethernet_frame.set_ethertype(EtherTypes::Ipv6);
+//                             fake_ethernet_frame.set_payload(&packet[payload_offset..]);
+
+//                             handle_ethernet_frame(&interface, &fake_ethernet_frame.to_immutable());
+//                             continue;
+//                         }
+//                     }
+//                 }
+
+//                 handle_ethernet_frame(&interface, &EthernetPacket::new(packet).unwrap());
+
+//             }
+//             Err(e) => panic!("packetdump: unable to receive packet: {}", e),
+//         }
+//     }
+
+
+
+//     // send_icmp ();
+
+//     // let listener = TcpListener::bind("127.0.0.1:3002")?;
+
+//     // // accept connections and process them serially
+//     // for stream in listener.incoming() {
+//     //     handle_incoming(stream?);
+//     // }
+//     Ok(())
+// }
+
+
+fn handle_incoming(mut stream: TcpStream) {
+
+    println!("@handle incoming");
+
+    let mut data = [0 as u8; 50];
+    while match stream.read(&mut data) {
+        Ok(size) => {
+            println!("Received {} bytes", size);
+
+            let v = to_int (&data, size);
+
+            println!("value: {:#?}",  v);
+
+            // TODO : send ICMP echo request
+            // send_icmp ();
+
+            true
+        },
+        Err(_) => {
+            println!("An error occurred, terminating connection with {}", stream.peer_addr().unwrap());
+            stream.shutdown(Shutdown::Both).unwrap();
+            false
+        }
+    } {}
+
+}
 
 fn main() -> std::io::Result<()> {
 
-    let iface_name = "lo";
-    let interface_names_match = |iface: &NetworkInterface| iface.name == iface_name;
-
-    // Find the network interface with the provided name
-    let interfaces = datalink::interfaces();
-    let interface = interfaces
-        .into_iter()
-        .filter(interface_names_match)
-        .next()
-        .unwrap_or_else(|| panic!("No such network interface: {}", iface_name));
-
-    let (_, mut rx) = match datalink::channel(&interface, Default::default()) {
-        Ok(Ethernet(tx, rx)) => (tx, rx),
-        Ok(_) => panic!("packetdump: unhandled channel type: {}"),
-        Err(e) => panic!("packetdump: unable to create channel: {}", e),
-    };
-
-    loop {
-        let mut buf: [u8; 1600] = [0u8; 1600];
-        let mut fake_ethernet_frame = MutableEthernetPacket::new(&mut buf[..]).unwrap();
-        match rx.next() {
-            Ok(packet) => {
-                let payload_offset;
-                if cfg!(any(target_os = "macos", target_os = "ios"))
-                    && interface.is_up()
-                    && !interface.is_broadcast()
-                    && ((!interface.is_loopback() && interface.is_point_to_point())
-                        || interface.is_loopback())
-                {
-                    if interface.is_loopback() {
-                        // The pnet code for BPF loopback adds a zero'd out Ethernet header
-                        payload_offset = 14;
-                    } else {
-                        // Maybe is TUN interface
-                        payload_offset = 0;
-                    }
-                    if packet.len() > payload_offset {
-                        let version = Ipv4Packet::new(&packet[payload_offset..])
-                            .unwrap()
-                            .get_version();
-                        if version == 4 {
-                            fake_ethernet_frame.set_destination(MacAddr(0, 0, 0, 0, 0, 0));
-                            fake_ethernet_frame.set_source(MacAddr(0, 0, 0, 0, 0, 0));
-                            fake_ethernet_frame.set_ethertype(EtherTypes::Ipv4);
-                            fake_ethernet_frame.set_payload(&packet[payload_offset..]);
-
-                            handle_ethernet_frame(&interface, &fake_ethernet_frame.to_immutable());
-                            continue;
-                        } else if version == 6 {
-                            fake_ethernet_frame.set_destination(MacAddr(0, 0, 0, 0, 0, 0));
-                            fake_ethernet_frame.set_source(MacAddr(0, 0, 0, 0, 0, 0));
-                            fake_ethernet_frame.set_ethertype(EtherTypes::Ipv6);
-                            fake_ethernet_frame.set_payload(&packet[payload_offset..]);
-
-                            handle_ethernet_frame(&interface, &fake_ethernet_frame.to_immutable());
-                            continue;
-                        }
-                    }
-                }
-
-                handle_ethernet_frame(&interface, &EthernetPacket::new(packet).unwrap());
-
-            }
-            Err(e) => panic!("packetdump: unable to receive packet: {}", e),
-        }
-    }
-
-
-
     // send_icmp ();
 
-    // let listener = TcpListener::bind("127.0.0.1:3002")?;
+    let listener = TcpListener::bind("127.0.0.1:3002")?;
 
-    // // accept connections and process them serially
-    // for stream in listener.incoming() {
-    //     handle_incoming(stream?);
-    // }
+    // accept connections and process them serially
+    for stream in listener.incoming() {
+        handle_incoming(stream?);
+    }
     Ok(())
 }
 
